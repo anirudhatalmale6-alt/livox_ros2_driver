@@ -227,6 +227,22 @@ void LdsLidar::OnDeviceBroadcast(const BroadcastDeviceInfo *info) {
   }
 }
 
+/** Feed the dashboard health rows from the device heartbeat's status_code.
+ *  This is the same LidarErrorCode bitfield the ErrorMessage callback carries,
+ *  but it rides the regular state heartbeat - so the panel fills in even if the
+ *  Avia is quiet on the separate error-message push. Only valid in the Normal
+ *  state (the union holds switching progress otherwise). */
+static void FeedHealthFromInfo(uint8_t handle, const DeviceInfo &info) {
+  if (info.state != kLidarStateNormal) {
+    return;
+  }
+  const LidarErrorCode &e = info.status.status_code.lidar_error_code;
+  LidarLinkSetError(handle, e.temp_status, e.volt_status, e.motor_status,
+                    e.dirty_warn, e.firmware_err, e.device_status,
+                    e.fan_status, e.self_heating, e.ptp_status,
+                    e.time_sync_status, e.system_status);
+}
+
 /** Callback function of changing of device state. */
 void LdsLidar::OnDeviceChange(const DeviceInfo *info, DeviceEvent type) {
   if (info == nullptr) {
@@ -252,6 +268,7 @@ void LdsLidar::OnDeviceChange(const DeviceInfo *info, DeviceEvent type) {
   } else if (type == kEventStateChange) {
     p_lidar->info = *info;
     LidarLinkSetWorkState(handle, p_lidar->info.state);
+    FeedHealthFromInfo(handle, p_lidar->info);
   }
 
   if (p_lidar->connect_state == kConnectStateOn) {
@@ -259,9 +276,11 @@ void LdsLidar::OnDeviceChange(const DeviceInfo *info, DeviceEvent type) {
            p_lidar->info.broadcast_code,
            p_lidar->info.status.status_code.error_code, p_lidar->info.state,
            p_lidar->info.feature);
-    /** Feed the dashboard control link: which device + its work state. */
+    /** Feed the dashboard control link: which device, its work state, and the
+     *  health bits carried in this heartbeat's status_code. */
     LidarLinkSetHandle(handle, p_lidar->info.broadcast_code);
     LidarLinkSetWorkState(handle, p_lidar->info.state);
+    FeedHealthFromInfo(handle, p_lidar->info);
     SetErrorMessageCallback(handle, LidarErrorStatusCb);
 
     /** Config lidar parameter */
