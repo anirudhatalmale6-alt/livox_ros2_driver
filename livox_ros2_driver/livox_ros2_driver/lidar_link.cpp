@@ -30,6 +30,9 @@ struct LinkState {
   uint8_t temp = 0, volt = 0, motor = 0, dirty = 0, firmware_err = 0,
           service_life = 0, fan = 0, self_heating = 0, ptp = 0, time_sync = 0,
           system = 0;
+  // Set when we command the lidar back to Normal; sampling is (re)started once
+  // the device actually reports it has reached the Normal state.
+  bool pending_start = false;
 };
 
 LinkState g_link;
@@ -48,15 +51,20 @@ void StartSampleCb(livox_status status, uint8_t handle, uint8_t response,
   printf("[lidar_link] restart sampling ack handle=%u status=%d response=%u\n",
          handle, status, response);
 }
-// When we command the lidar back to Normal, it spins the head up but does NOT
-// resume point-cloud sampling on its own - so restart sampling once Normal is
-// acknowledged. This is what lets "Working Normally" + APPLY recover a unit that
-// was put into Standby/Power Saving, with no power-cycle.
+// When we command the lidar back to Normal it spins the head up but does NOT
+// resume point-cloud sampling on its own. The set-mode ack only means the
+// command was received - the head is still spinning up, so starting sampling
+// right here is too early. Instead we arm pending_start and let
+// LidarLinkSetWorkState fire the sampling start once the device actually
+// reports it has reached the Normal state (see below). This is what lets
+// "Working Normally" + APPLY recover a unit from Standby/Power Saving with no
+// power-cycle. Forward declaration - defined with the status-ingest section.
+void ArmPendingStart();
 void SetNormalCb(livox_status status, uint8_t handle, uint8_t response, void *) {
   printf("[lidar_link] set-mode(Normal) ack handle=%u status=%d response=%u\n",
          handle, status, response);
   if (status == kStatusSuccess) {
-    LidarStartSampling(handle, StartSampleCb, nullptr);
+    ArmPendingStart();
   }
 }
 
@@ -78,6 +86,12 @@ bool GetStr(const rapidjson::Document &d, const char *key, std::string &out) {
   return false;
 }
 
+// Arm the "restart sampling once the device is Normal" latch (see SetNormalCb).
+void ArmPendingStart() {
+  std::lock_guard<std::mutex> lock(g_link.m);
+  g_link.pending_start = true;
+}
+
 }  // namespace
 
 /** ---- status ingest ---- */
@@ -90,10 +104,23 @@ void LidarLinkSetHandle(uint8_t handle, const char *broadcast_code) {
 }
 
 void LidarLinkSetWorkState(uint8_t handle, int state) {
-  std::lock_guard<std::mutex> lock(g_link.m);
-  g_link.present = true;
-  g_link.handle = handle;
-  g_link.work_state = state;
+  bool start_now = false;
+  {
+    std::lock_guard<std::mutex> lock(g_link.m);
+    g_link.present = true;
+    g_link.handle = handle;
+    g_link.work_state = state;
+    // 1 == kLidarStateNormal. If we asked to come back to Normal, the head has
+    // now finished spinning up, so kick sampling exactly once.
+    if (state == 1 && g_link.pending_start) {
+      g_link.pending_start = false;
+      start_now = true;
+    }
+  }
+  if (start_now) {
+    printf("[lidar_link] device reached Normal - restarting sampling\n");
+    LidarStartSampling(handle, StartSampleCb, nullptr);
+  }
 }
 
 void LidarLinkSetFirmware(uint8_t handle, uint8_t a, uint8_t b, uint8_t c,
