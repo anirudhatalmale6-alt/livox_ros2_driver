@@ -43,6 +43,22 @@ void ParamCb(livox_status status, uint8_t handle, DeviceParameterResponse *,
              void *) {
   printf("[lidar_link] param ack handle=%u status=%d\n", handle, status);
 }
+void StartSampleCb(livox_status status, uint8_t handle, uint8_t response,
+                   void *) {
+  printf("[lidar_link] restart sampling ack handle=%u status=%d response=%u\n",
+         handle, status, response);
+}
+// When we command the lidar back to Normal, it spins the head up but does NOT
+// resume point-cloud sampling on its own - so restart sampling once Normal is
+// acknowledged. This is what lets "Working Normally" + APPLY recover a unit that
+// was put into Standby/Power Saving, with no power-cycle.
+void SetNormalCb(livox_status status, uint8_t handle, uint8_t response, void *) {
+  printf("[lidar_link] set-mode(Normal) ack handle=%u status=%d response=%u\n",
+         handle, status, response);
+  if (status == kStatusSuccess) {
+    LidarStartSampling(handle, StartSampleCb, nullptr);
+  }
+}
 
 std::string Lower(const std::string &s) {
   std::string o = s;
@@ -158,7 +174,10 @@ bool LidarLinkApply(const std::string &cmd_json, std::string &result) {
     if (Has(lv, "standby")) mode = kLidarModeStandby;
     else if (Has(lv, "power")) mode = kLidarModePowerSaving;
     else mode = kLidarModeNormal;  // "normal" / "working"
-    livox_status st = LidarSetMode(handle, mode, CommonCb, nullptr);
+    // Returning to Normal also needs sampling restarted (SetNormalCb does it);
+    // Standby / Power Saving just change mode.
+    CommonCommandCallback cb = (mode == kLidarModeNormal) ? SetNormalCb : CommonCb;
+    livox_status st = LidarSetMode(handle, mode, cb, nullptr);
     applied += (count++ ? ", " : "") + std::string("work_mode=") + v +
                (st == kStatusSuccess ? "" : "(send-fail)");
   }
