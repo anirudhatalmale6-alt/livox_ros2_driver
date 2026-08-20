@@ -157,7 +157,10 @@ uint32_t Lddc::PublishPointcloud2(LidarDataQueue *queue, uint32_t packet_num,
   uint8_t *point_base = cloud.data.data();
   uint8_t data_source = lidar->data_src;
   uint32_t line_num = GetLaserLineNumber(lidar->info.type);
-  uint32_t echo_num = GetEchoNumPerPoint(lidar->raw_data_type);
+  // NOT hoisted out of the loop any more - see the per-packet read below.
+  // Reading it once from lidar->raw_data_type was the heap overflow: during a
+  // return-mode change the queue still holds packets of the OLD type while
+  // raw_data_type has already moved on.
   uint32_t is_zero_packet = 0;
   while ((published_packet < packet_num) && !QueueIsEmpty(queue)) {
     QueuePrePop(queue, &storage_packet);
@@ -179,11 +182,29 @@ uint32_t Lddc::PublishPointcloud2(LidarDataQueue *queue, uint32_t packet_num,
     if (!published_packet) {
       cloud.header.stamp = rclcpp::Time(timestamp);
     }
+    // Everything about this packet comes from THIS packet's data_type.
+    const uint8_t pkt_type = raw_packet->data_type;
+    const uint32_t echo_num = GetEchoNumPerPoint(pkt_type);
     uint32_t single_point_num = storage_packet.point_num * echo_num;
+
+    // Belt and braces. The buffer above budgets kMaxPointPerEthPacket points
+    // per packet; a packet that would write more than that is a type mismatch
+    // we have not thought of, and it must be dropped rather than allowed to
+    // run off the end of the heap. Getting this wrong once already cost the
+    // client two days: the driver died with "realloc(): invalid old size".
+    if (GetPointsPerPacket(pkt_type) * echo_num > kMaxPointPerEthPacket) {
+      RCLCPP_WARN(cur_node_->get_logger(),
+                  "Lidar[%d] packet type[%d] wants %u points, budget is %u - "
+                  "dropping it rather than overrunning the buffer",
+                  handle, pkt_type,
+                  GetPointsPerPacket(pkt_type) * echo_num,
+                  kMaxPointPerEthPacket);
+      break;
+    }
 
     if (kSourceLvxFile != data_source) {
       PointConvertHandler pf_point_convert =
-          GetConvertHandler(lidar->raw_data_type);
+          GetConvertHandler(pkt_type);
       if (pf_point_convert) {
         point_base = pf_point_convert(point_base, raw_packet,
             lidar->extrinsic_parameter, line_num);
@@ -267,7 +288,10 @@ uint32_t Lddc::PublishPointcloudData(LidarDataQueue *queue, uint32_t packet_num,
   uint32_t is_zero_packet = 0;
   uint8_t data_source = lidar->data_src;
   uint32_t line_num = GetLaserLineNumber(lidar->info.type);
-  uint32_t echo_num = GetEchoNumPerPoint(lidar->raw_data_type);
+  // NOT hoisted out of the loop any more - see the per-packet read below.
+  // Reading it once from lidar->raw_data_type was the heap overflow: during a
+  // return-mode change the queue still holds packets of the OLD type while
+  // raw_data_type has already moved on.
   while ((published_packet < packet_num) && !QueueIsEmpty(queue)) {
     QueuePrePop(queue, &storage_packet);
     LivoxEthPacket *raw_packet =
@@ -286,11 +310,29 @@ uint32_t Lddc::PublishPointcloudData(LidarDataQueue *queue, uint32_t packet_num,
     if (!published_packet) {
       cloud.header.stamp = timestamp / 1000.0;  // to pcl ros time stamp
     }
+    // Everything about this packet comes from THIS packet's data_type.
+    const uint8_t pkt_type = raw_packet->data_type;
+    const uint32_t echo_num = GetEchoNumPerPoint(pkt_type);
     uint32_t single_point_num = storage_packet.point_num * echo_num;
+
+    // Belt and braces. The buffer above budgets kMaxPointPerEthPacket points
+    // per packet; a packet that would write more than that is a type mismatch
+    // we have not thought of, and it must be dropped rather than allowed to
+    // run off the end of the heap. Getting this wrong once already cost the
+    // client two days: the driver died with "realloc(): invalid old size".
+    if (GetPointsPerPacket(pkt_type) * echo_num > kMaxPointPerEthPacket) {
+      RCLCPP_WARN(cur_node_->get_logger(),
+                  "Lidar[%d] packet type[%d] wants %u points, budget is %u - "
+                  "dropping it rather than overrunning the buffer",
+                  handle, pkt_type,
+                  GetPointsPerPacket(pkt_type) * echo_num,
+                  kMaxPointPerEthPacket);
+      break;
+    }
 
     if (kSourceLvxFile != data_source) {
       PointConvertHandler pf_point_convert =
-          GetConvertHandler(lidar->raw_data_type);
+          GetConvertHandler(pkt_type);
       if (pf_point_convert) {
         pf_point_convert(point_buf, raw_packet, lidar->extrinsic_parameter, \
             line_num);
@@ -383,7 +425,10 @@ uint32_t Lddc::PublishCustomPointcloud(LidarDataQueue *queue,
   uint8_t point_buf[2048];
   uint8_t data_source = lds_->lidars_[handle].data_src;
   uint32_t line_num = GetLaserLineNumber(lidar->info.type);
-  uint32_t echo_num = GetEchoNumPerPoint(lidar->raw_data_type);
+  // NOT hoisted out of the loop any more - see the per-packet read below.
+  // Reading it once from lidar->raw_data_type was the heap overflow: during a
+  // return-mode change the queue still holds packets of the OLD type while
+  // raw_data_type has already moved on.
   uint32_t point_interval = GetPointInterval(lidar->info.type);
   uint32_t published_packet = 0;
   uint32_t packet_offset_time = 0;  /** uint:ns */
@@ -413,11 +458,29 @@ uint32_t Lddc::PublishCustomPointcloud(LidarDataQueue *queue,
     } else {
       packet_offset_time = (uint32_t)(timestamp - livox_msg.timebase);
     }
+    // Everything about this packet comes from THIS packet's data_type.
+    const uint8_t pkt_type = raw_packet->data_type;
+    const uint32_t echo_num = GetEchoNumPerPoint(pkt_type);
     uint32_t single_point_num = storage_packet.point_num * echo_num;
+
+    // Belt and braces. The buffer above budgets kMaxPointPerEthPacket points
+    // per packet; a packet that would write more than that is a type mismatch
+    // we have not thought of, and it must be dropped rather than allowed to
+    // run off the end of the heap. Getting this wrong once already cost the
+    // client two days: the driver died with "realloc(): invalid old size".
+    if (GetPointsPerPacket(pkt_type) * echo_num > kMaxPointPerEthPacket) {
+      RCLCPP_WARN(cur_node_->get_logger(),
+                  "Lidar[%d] packet type[%d] wants %u points, budget is %u - "
+                  "dropping it rather than overrunning the buffer",
+                  handle, pkt_type,
+                  GetPointsPerPacket(pkt_type) * echo_num,
+                  kMaxPointPerEthPacket);
+      break;
+    }
 
     if (kSourceLvxFile != data_source) {
       PointConvertHandler pf_point_convert =
-          GetConvertHandler(lidar->raw_data_type);
+          GetConvertHandler(pkt_type);
       if (pf_point_convert) {
         pf_point_convert(point_buf, raw_packet, lidar->extrinsic_parameter, \
             line_num);

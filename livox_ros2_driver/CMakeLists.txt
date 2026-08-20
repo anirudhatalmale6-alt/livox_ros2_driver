@@ -109,6 +109,11 @@ if(BUILD_TESTING)
   # uncomment the line when this package is not in a git repo
   #set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # The return-mode heap overflow. Pure arithmetic against the data-type table,
+  # so it needs neither a LiDAR nor ROS to run.
+  add_executable(test_return_mode_overflow test/test_return_mode_overflow.cpp)
+  add_test(NAME test_return_mode_overflow COMMAND test_return_mode_overflow)
 endif()
 
 ament_auto_package(INSTALL_TO_SHARE
